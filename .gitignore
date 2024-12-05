@@ -51,3 +51,4 @@ ENV/
 tmp
 d2s_storage
 env.yaml
+parsed_data

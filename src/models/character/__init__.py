@@ -1,4 +1,6 @@
 import os
+from typing import Type
+
 import numpy as np
 import time
 from shapely.geometry import Point
@@ -8,24 +10,106 @@ from src.bases.models import IngameModel
 from src.bases.errors import Error
 from src.common.constants.character import (
     ITEM_LIST_HEADER, ITEM_LIST_FOOTER, ITEM_HEADER, STRUCTURE,
-    MERC_ITEM_LIST_HEADER, FOOTER, STASH_SIZE, INVENTORY_SIZE
+    MERC_ITEM_LIST_HEADER, FOOTER, STASH_SIZE, INVENTORY_SIZE, DIFFICULTY_STRUCTURE, DIFFICULTY_INDEX_MAPPING
 )
 from src.models.item import Item
-from src.common.utils import dec_to_hex, make_byte_array_from_hex, get_dict_key_from_value
+from src.common.utils import (
+    dec_to_hex, make_byte_array_from_hex,
+    get_dict_key_from_value, dec_to_bin, convert_byte_array_to_bit, bin_to_dec, bin_to_hex
+)
 from src.common.constants.dirs import D2S_STORAGE_DIR
 from src.common.constants.items import HORADRIC_CUBE_SIZE, LOCATIONS, STORAGES
 
 
+class CharacterDifficulty(IngameModel):
+    code: str
+
+    _hex_data_as_byte_array: list[str]
+    _bin_data_as_array: list[str]
+
+    def __init__(self, **kwargs):
+        super(CharacterDifficulty, self).__init__(**kwargs)
+        self._hex_data_as_byte_array = make_byte_array_from_hex(self.data)
+
+        self._bin_data_as_array = list(reversed(
+            convert_byte_array_to_bit(
+                data=list(reversed(self._hex_data_as_byte_array)),
+                length=8
+            )
+        ))
+
+    @property
+    def active(self) -> bool:
+        index, length = DIFFICULTY_STRUCTURE['active']
+        data = self._bin_data_as_array[index: index + length]
+        data = ''.join(reversed(data))
+        return bin_to_dec(data) > 0
+
+    @property
+    def act_id(self) -> int:
+        index, length = DIFFICULTY_STRUCTURE['act']
+        data = self._bin_data_as_array[index: index + length]
+        data = ''.join(reversed(data))
+        return bin_to_dec(data)
+
+    @property
+    def updated_data(self) -> list[str]:
+        hex_data = bin_to_hex(
+            ''.join(reversed(self._bin_data_as_array))
+        )
+
+        result = reversed(
+            make_byte_array_from_hex(hex_data)
+        )
+
+        return list(result)
+
+    def to_dict(self, **kwargs) -> dict:
+        result = super().to_dict(**kwargs)
+
+        result['active'] = self.active
+        result['act_id'] = self.act_id
+
+        return result
+
+    def set_act(self, act_id: int) -> 'CharacterDifficulty':
+        index, length = DIFFICULTY_STRUCTURE['act']
+        max_value = bin_to_dec('1' * length)
+
+        if act_id < 0 or act_id > max_value:
+            raise Error(
+                'InvalidParams',
+                'act_id is out of valid range'
+            )
+
+        value_as_bin = dec_to_bin(act_id, length=length)
+
+        self._bin_data_as_array[index: index + length] = list(reversed(value_as_bin))
+
+        return self
+
+    def set_active(self, value: bool) -> 'CharacterDifficulty':
+        index, length = DIFFICULTY_STRUCTURE['active']
+
+        value_as_bin = '1' if value else '0'
+
+        self._bin_data_as_array[index] = value_as_bin
+
+        return self
+
+
 class Character(IngameModel):
     _hex_data_as_byte_array: list[str]
-    
+    _difficulties: list[CharacterDifficulty]
     _items: list[Item]
     _merc_items: list[Item]
-    
+
     def __init__(self, **kwargs):
         super(Character, self).__init__(**kwargs)
 
         self._hex_data_as_byte_array = make_byte_array_from_hex(self.data)
+
+        self._difficulties = self._load_difficulties()
 
         self._items = self._parse_items(self.item_start_index, self.item_list_footer_index)
 
@@ -58,6 +142,56 @@ class Character(IngameModel):
             data=self._hex_data_as_byte_array,
             query=ITEM_LIST_FOOTER
         )
+
+    @property
+    def difficulty_struct(self) -> tuple[int, int]:
+        return STRUCTURE['difficulty']
+
+    def _load_difficulties(self) -> list[CharacterDifficulty]:
+        result = list()
+
+        index, length = self.difficulty_struct
+        value_as_hex_array = self._hex_data_as_byte_array[index:index + length]
+
+        for i, diff_data_as_byte in enumerate(value_as_hex_array):
+            code = DIFFICULTY_INDEX_MAPPING[i]
+            result.append(CharacterDifficulty(
+                code=code,
+                data=diff_data_as_byte
+            ))
+
+        return result
+
+    @property
+    def difficulties(self) -> dict[str, dict]:
+        result = dict()
+        for diff in self._difficulties:
+            result[diff.code] = diff.to_dict()
+            print(diff.code, diff.updated_data)
+        return result
+
+    def change_act(self, act_id: int):
+        for diff in self._difficulties:
+            if diff.active:
+                active_diff = diff
+                break
+        else:
+            active_diff = self._difficulties[0]
+
+        active_diff.set_active(True)
+        active_diff.set_act(act_id=act_id)
+
+        return self
+
+    @property
+    def map_info(self):
+        index, length = STRUCTURE['map']
+        value = self._hex_data_as_byte_array[index:index + length]
+        value = ''.join(value[::-1])
+
+        # TODO: decode this data
+
+        return value
 
     @property
     def item_start_index(self):
@@ -117,7 +251,19 @@ class Character(IngameModel):
         return result
 
     def save(self, file_path: str, backup_path: str = None):
-        result = self._hex_data_as_byte_array[:self.item_list_header_index]
+
+        diff_index, diff_length = self.difficulty_struct
+
+        result = self._hex_data_as_byte_array[:diff_index]
+
+        diff_data = []
+        for diff in self._difficulties:
+            diff_data.extend(diff.updated_data)
+        result.extend(diff_data)
+
+        # fill data from difficulties to item start index
+        result.extend(self._hex_data_as_byte_array[diff_index + diff_length:self.item_list_header_index])
+
         item_list_data = []
         item_list_data.extend(ITEM_LIST_HEADER)
         counted_items = list(filter(
@@ -137,7 +283,7 @@ class Character(IngameModel):
             merc_item_list_data = []
             merc_item_list_data.extend(MERC_ITEM_LIST_HEADER)
             merc_counted_items = list(filter(
-                lambda x: x.container != 'socketed',
+                lambda x: x.location != 'socketed',
                 self._merc_items
             ))
             merc_item_list_data.extend(reversed(make_byte_array_from_hex(
@@ -217,8 +363,8 @@ class Character(IngameModel):
         return result
 
     def add_items(self,
-                  storage_code: int,
-                  location_code: int,
+                  storage_id: int,
+                  location_id: int,
                   from_dir: bool = False,
                   dir_path: str = None,
                   item_list: list[dict] = None,
@@ -269,11 +415,11 @@ class Character(IngameModel):
                     for i in range(quantity):
                         adding_items.append(item.clone())
 
-        storage = LOCATIONS.get(storage_code)
+        storage = LOCATIONS.get(storage_id)
         if not storage:
             raise Error(
                 'InvalidParams',
-                f'Unsupported storage: {storage_code}'
+                f'Unsupported storage: {storage_id}'
             )
         if storage == 'inventory':
             max_x, max_y = INVENTORY_SIZE
@@ -289,8 +435,8 @@ class Character(IngameModel):
             width, height = item.size
 
             item.change_position(
-                storage_code=storage_code,
-                location_code=location_code,
+                storage_id=storage_id,
+                location_id=location_id,
                 storage_x=x,
                 storage_y=y
             )
@@ -306,19 +452,19 @@ class Character(IngameModel):
     def duplicate_items(self,
                         item: Item,
                         location_id: int,
-                        container_id: int,
+                        storage_id: int,
                         quantity: int = 1,
-                        location_x_coordinate: int = 0):
-        location = LOCATIONS.get(location_id)
-        if not location:
+                        storage_x: int = 0):
+        storage_code = STORAGES.get(storage_id)
+        if not storage_code:
             raise Error(
                 'InvalidParams',
-                f'Unsupported location: {location_id}'
+                f'Unsupported storage: {storage_id}'
             )
 
-        if location == 'inventory':
+        if storage_code == 'inventory':
             max_x, max_y = INVENTORY_SIZE
-        elif location == 'horadric_cube':
+        elif storage_code == 'horadric_cube':
             max_x, max_y = HORADRIC_CUBE_SIZE
         else:
             max_x, max_y = STASH_SIZE
@@ -326,16 +472,17 @@ class Character(IngameModel):
         width, height = item.size
 
         y = 0
-        x = location_x_coordinate or 0
+        x = storage_x or 0
         for i in range(quantity):
             cloned_item = item.clone()
             print(x, y, i)
             cloned_item.change_position(
                 location_id=location_id,
-                container_id=container_id,
-                location_x_coordinate=x,
-                location_y_coordinate=y
+                storage_id=storage_id,
+                storage_x=x,
+                storage_y=y
             )
+
             self._items.append(cloned_item)
 
             x += width

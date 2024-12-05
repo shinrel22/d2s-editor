@@ -1,10 +1,3 @@
-import json
-import os
-
-from src.common.utils import decompress_data
-from src.common.constants.dirs import DATA_DIR, TMR_DIR
-from config import DATA_ENCRYPTION_KEY
-
 """
 After this come N items. Each item starts with a basic 14-byte structure.
 Many fields in this structure are not "byte-aligned" and are described by their BIT position and sizes.
@@ -222,47 +215,80 @@ ADDING_DMG_WITH_DURATION_MOD_CODES = [
     'poisonmindam',
 ]
 
+SKILL_ON_EVENT_MOD_CODES = [
+    'item_skillonpkill',
+    'item_skillonanykill',
+    'item_skillongetmissilehit',
+    'item_skillongetmeleed',
+    'item_skillondamaged',
+    'item_warpskillonattack',
+    'item_skillonanydeath',
+    'item_skillongethit',
+    'item_skillonlevelup',
+    'item_skillonhit',
+    'item_skillondeath',
+    'item_skillonkill',
+    'item_skillonattack',
+]
+
 AFFIX_MOD_CODES = [
     'is_suffix',
     'is_prefix'
 ]
 
+DESC_TEXT_MOD_CODES = [
+    'desc_orange',
+    'desc_less_top',
+    'desc_top',
+    'desc_bottom',
+    'ied_display'
+]
 
-def load_data_from_file(data_path: str, tmp_path: str) -> dict:
+MO_COUNT_MOD_CODE = 'item_mocount'
 
-    data = None
-    if os.path.exists(tmp_path):
-        data = json.load(open(tmp_path))
+CUBE_UPGRADE_MOD_CODES = [
+    'cube_upgrade_1',
+    'cube_upgrade_2',
+    'cube_upgrade_3',
+    'cube_upgrade_4',
+    'cube_upgrade_5',
+    'cube_upgrade_6',
+    'cube_upgrade_7',
+    'cube_upgrade_8',
+    'cube_upgrade_9',
+    'cube_upgrade_10',
+    'cube_upgrade_11',
+    'cube_upgrade_12',
+]
 
-    if not data:
-        data = decompress_data(
-            data=open(data_path, 'rb').read(),
-            encryption_key=DATA_ENCRYPTION_KEY
-        )
-        data = json.loads(data.decode())
+ADDING_CLASS_SKILL_LEVEL_MOD_CODE = 'item_addclassskills'
+ADDING_OSKILL_MOD_CODE = 'item_nonclassskill'
+ADDING_IED_MOD_CODE = 'IED'
+ADDING_SPELL_FOCUS_MOD_CODE = 'enr_factor'
 
-        with open(
-                tmp_path,
-                'w'
-        ) as fr:
-            fr.write(json.dumps(data))
+POISON_LENGTH_MOD_CODE = 'poisonlength'
+LIFE_REGEN_MOD_CODE = 'hpregen'
 
-    return data
+REANIMATE_MOD_CODE = 'item_reanimate'
 
+TROPHY_COUNTER_MOD_CODE = 'trophy_counter'
 
-BASE_ITEMS = load_data_from_file(
-    data_path=os.path.join(DATA_DIR, 'base_items.dat'),
-    tmp_path=os.path.join(TMR_DIR, 'base_items.json'),
-)
-ITEM_TYPES = load_data_from_file(
-    data_path=os.path.join(DATA_DIR, 'item_types.dat'),
-    tmp_path=os.path.join(TMR_DIR, 'item_types.json'),
-)
-ITEM_BASE_MODS = load_data_from_file(
-    data_path=os.path.join(DATA_DIR, 'item_mods.dat'),
-    tmp_path=os.path.join(TMR_DIR, 'item_mods.json'),
-)
-ITEM_BASE_STATS = load_data_from_file(
-    data_path=os.path.join(DATA_DIR, 'item_stats.dat'),
-    tmp_path=os.path.join(TMR_DIR, 'item_stats.json'),
-)
+SHRINE_BLESSED_MOD_CODE = 'blessings_counter'
+ITEM_UPGRADED_MOD_CODE = 'item_upgraded'
+ITEM_CORRUPTED_MOD_CODE = 'item_corrupted'
+
+ADDING_BASE_STAT_MOD_CODES = [
+    'strength',
+    'energy',
+    'dexterity',
+    'vitality',
+]
+
+ADDING_BASE_STAT_PERCENT_MOD_CODES = [
+    'item_strength_percent',
+    'item_dexterity_percent',
+    'item_energy_percent',
+    'item_vitality_percent',
+]
+
+TOTAL_SOCKETS = 6

@@ -34,6 +34,11 @@ STRUCTURE = {
     'npc': (714, 51),
 }
 
+DIFFICULTY_STRUCTURE = {
+    'act': (0, 3),
+    'active': (7, 1),
+}
+
 FOOTER = ['6b', '66', '00']
 ITEM_LIST_HEADER = ['4a', '4d']
 ITEM_LIST_FOOTER = ['4a', '4d', '00', '00', '6a', '66']
@@ -53,3 +58,9 @@ CHAR_CLASSES = {
 
 INVENTORY_SIZE = (14, 9)
 STASH_SIZE = (13, 13)
+
+DIFFICULTY_INDEX_MAPPING = {
+    0: 'normal',
+    1: 'nightmare',
+    2: 'hell'
+}

@@ -8,6 +8,9 @@ class BaseModel(PydanticBaseModel):
 class IngameModel(PydanticBaseModel):
     data: str
 
+    def to_dict(self, **kwargs) -> dict:
+        return self.model_dump(**kwargs)
+
     @staticmethod
     def find_index(data: list[str],
                    query: list[str],

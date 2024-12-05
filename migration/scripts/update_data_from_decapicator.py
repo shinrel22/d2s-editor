@@ -20,14 +20,16 @@ def update_item_mods():
     for i in convert_tsv_to_json(
             decompress_dat_file_from_decapitator(decapitator_file_path)
     ):
-        mod_id = int(i['#code'])
+        mod_id = i['#code']
+        mod_id_as_int = int(mod_id)
         stat_code = i['stat']
         code = stat_code
 
         mod = {
             'code': code,
-            'id': mod_id,
-            'stat_code': stat_code
+            'id': mod_id_as_int,
+            'stat_code': stat_code,
+            'positive_desc': i['descPositive']
         }
 
         teammate_codes = i.get('descGroupIDs')
@@ -48,15 +50,21 @@ def update_item_mods():
         except (TypeError, ValueError):
             save_param_bits = 0
 
+        try:
+            min_value = int(i.get('add'))
+        except (TypeError, ValueError):
+            min_value = 0
+
+        mod['min_value'] = min_value
         mod['length'] = bits + save_param_bits
 
-        if code in result:
+        if mod_id in result:
             for k, v in mod.items():
-                if k not in result[code]:
-                    result[code][k] = v
+                if k not in result[mod_id]:
+                    result[mod_id][k] = v
 
         else:
-            result[code] = mod
+            result[mod_id] = mod
 
     compressed_data = compress_data(
         data=json.dumps(result).encode(),
@@ -231,8 +239,53 @@ def update_item_types():
     )
 
 
+def update_skills():
+    decapitator_file_path = os.path.join(TMR_DIR, 'decapitator\\skills.dat')
+    file_path = os.path.join(DATA_DIR, 'skills.dat')
+
+    if os.path.exists(file_path):
+        with open(file_path, 'rb') as fr:
+            result = json.loads(decompress_data(data=fr.read(), encryption_key=DATA_ENCRYPTION_KEY))
+    else:
+        result = dict()
+
+    for i in convert_tsv_to_json(
+            decompress_dat_file_from_decapitator(decapitator_file_path)
+    ):
+        skill_id = i['#code']
+
+        skill = {
+            'id': int(skill_id),
+            'name': i['name'],
+        }
+
+        try:
+            class_id = int(i['class'])
+        except (TypeError, ValueError):
+            class_id = -1
+
+        skill['class_id'] = class_id
+
+        if skill_id not in result:
+            result[skill_id] = skill
+
+    compressed_data = compress_data(
+        data=json.dumps(result).encode(),
+        encryption_key=DATA_ENCRYPTION_KEY
+    )
+
+    with open(file_path, 'wb') as fr:
+        fr.write(compressed_data)
+
+    decompress_data(
+        data=compressed_data,
+        encryption_key=DATA_ENCRYPTION_KEY
+    )
+
+
 if __name__ == '__main__':
     update_item_mods()
     update_item_stats()
     update_base_items()
     update_item_types()
+    update_skills()

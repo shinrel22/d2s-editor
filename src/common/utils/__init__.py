@@ -79,6 +79,16 @@ def make_byte_array_from_hex(data):
     ]
 
 
+def convert_byte_array_to_bit(data: list[str], length: int = None) -> list[str]:
+    joined_data = ''.join(data)
+    if length:
+        bin_data = dec_to_bin(int(joined_data, 16), length=length)
+    else:
+        bin_data = dec_to_bin(int(joined_data, 16))
+
+    return list(bin_data)
+
+
 def make_d2s_file_path(file_name: str, path: list):
     target = os.path.join(ROOT_PATH, 'd2s_storage')
 

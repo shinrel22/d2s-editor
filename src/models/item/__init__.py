@@ -1,21 +1,29 @@
 import copy
 import time
-import hashlib
 from math import ceil
 
 from src.bases.errors import Error
 from src.bases.models import IngameModel, BaseModel
 from src.common.constants.items import (
-    NON_EAR_STRUCTURE, RARITIES, ITEM_TYPES,
+    NON_EAR_STRUCTURE, RARITIES,
     BASE_STRUCTURE, LOCATIONS, STORAGES, EQUIPPED_LOCATIONS, ITEM_FOOTER,
-    BASE_ITEMS, START_DEFENSE_VALUE, START_MAX_DURABILITY_VALUE,
-    START_CURRENT_DURABILITY_VALUE, MOD_ID_LENGTH, ITEM_BASE_MODS,
-    ITEM_BASE_STATS, END_OF_MOD_SECTION,
-    ADDING_DMG_WITH_DURATION_MOD_CODES, ADDING_DMG_MOD_CODES, AFFIX_MOD_CODES
+    START_DEFENSE_VALUE, START_MAX_DURABILITY_VALUE,
+    START_CURRENT_DURABILITY_VALUE, MOD_ID_LENGTH,
+    END_OF_MOD_SECTION,
+    ADDING_DMG_WITH_DURATION_MOD_CODES,
+    ADDING_DMG_MOD_CODES, AFFIX_MOD_CODES,
+    ADDING_OSKILL_MOD_CODE, REANIMATE_MOD_CODE,
+    ADDING_CLASS_SKILL_LEVEL_MOD_CODE, SKILL_ON_EVENT_MOD_CODES,
+    DESC_TEXT_MOD_CODES, CUBE_UPGRADE_MOD_CODES,
+    MO_COUNT_MOD_CODE, TROPHY_COUNTER_MOD_CODE, TOTAL_SOCKETS,
+    ITEM_CORRUPTED_MOD_CODE,
+    ITEM_UPGRADED_MOD_CODE,
+    SHRINE_BLESSED_MOD_CODE
 )
+from src.common.data import ITEM_BASE_STATS, ITEM_TYPES, ITEM_BASE_MODS, BASE_ITEMS, SKILLS
 from src.common.utils import (
     bin_to_hex, bin_to_dec, split_array,
-    dec_to_bin, make_byte_array_from_hex,
+    dec_to_bin, make_byte_array_from_hex, convert_byte_array_to_bit,
 )
 
 
@@ -37,18 +45,38 @@ class BaseItem(BaseModel):
 
     is_armor: bool = False
     is_weapon: bool = False
+    is_2h_weapon: bool = False
+    is_body_armor: bool = False
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-        self.is_armor = self.has_related_type('armo')
-        self.is_weapon = self.has_related_type('weap')
+        self.is_armor = self.has_related_types(['armo'])
+        self.is_weapon = self.has_related_types(['weap'])
+        self.is_2h_weapon = self.has_related_types([
+            '2hax',
+            '2hsd',
+            'anx2',
+            'an2x',
+            'el2x',
+            'nagi',
+        ])
+        self.is_body_armor = self.has_related_types([
+            'tors',
+            'atrs',
+        ])
 
     @staticmethod
     def find_item_type(code: str) -> ItemType | None:
         if code not in ITEM_TYPES:
             return None
         return ItemType(**ITEM_TYPES[code])
+
+    def has_related_types(self, target_type_codes: list[str]) -> bool:
+        for target_type_code in target_type_codes:
+            if self.has_related_type(target_type_code):
+                return True
+        return False
 
     def has_related_type(self, target_type_code: str) -> bool:
 
@@ -85,11 +113,11 @@ class Stat(IngameModel):
     pass
 
 
-class BaseModifierFactor(BaseModel):
+class BaseModifierProperty(BaseModel):
     code: str
     length: int
-    min_value: float
-    conversion_rate: float = 1
+    min_value: float | int
+    conversion_rate: float | int = 1.0
 
 
 class BaseModifier(BaseModel):
@@ -97,18 +125,24 @@ class BaseModifier(BaseModel):
     code: str
     length: int
     stat_code: str
-    factors: list[BaseModifierFactor] = []
+    min_value: int | float = 0
+    conversion_rate: int | float = 1
 
 
-class ModFactorValues(BaseModel):
+class ModPropertyValues(BaseModel):
     value: float | int | None = None
     monster_id: int | None = None
+    mys_orb_id: int | None = None
+    text_id: int | None = None
     class_id: int | None = None
     skill_id: int | None = None
+    skill_name: str | None = None
     skill_level: int | None = None
     chance: int | None = None
+    min_dmg: float | int | None = None
     max_dmg: float | int | None = None
     duration: int | None = None
+    unknown: int | None = None
 
 
 class Modifier(IngameModel):
@@ -120,29 +154,64 @@ class Modifier(IngameModel):
 
     @property
     def id(self):
-        return str(int(hashlib.sha256(self.data.encode('utf-8')).hexdigest(), 16) % 10 ** 8)
+
+        result = self.base.code
+
+        property_values = self.property_values
+
+        if self.base.code in [*SKILL_ON_EVENT_MOD_CODES, ADDING_OSKILL_MOD_CODE]:
+            result += f'$skill-{property_values.skill_id}'
+
+        elif self.base.code in [ADDING_CLASS_SKILL_LEVEL_MOD_CODE]:
+            result += f'$class-{property_values.class_id}'
+
+        elif self.base.code in [REANIMATE_MOD_CODE]:
+            result += f'$monster-{property_values.monster_id}'
+
+        elif self.base.code in DESC_TEXT_MOD_CODES:
+            result += f'$text-{property_values.text_id}'
+
+        elif self.base.code in [MO_COUNT_MOD_CODE]:
+            result += f'$mo-{property_values.mys_orb_id}-{property_values.unknown}'
+
+        elif self.base.code in ['special_syn1', 'special_syn2']:
+            result += f'${property_values.value}'
+
+        if self.runeword:
+            result += '|rw'
+
+        return result
 
     @property
-    def factor_values(self) -> ModFactorValues:
-        result = ModFactorValues()
+    def property_values(self) -> ModPropertyValues:
+        result = ModPropertyValues()
         start_index = MOD_ID_LENGTH
 
-        for f in self.refine_factors(self.base):
-            factor_data = self.data[start_index:start_index + f.length]
-            factor_value = (bin_to_dec(factor_data[::-1]) * f.conversion_rate) + f.min_value
-
-            factor_code_data_type_info = result.__fields__.get(f.code)
-            if factor_code_data_type_info is None:
+        for p in self.init_properties(self.base):
+            prop_code_data_type_info = result.__fields__.get(p.code)
+            if prop_code_data_type_info is None:
                 raise Error(
-                    'FactorCodeNotFound',
-                    f'Factor code not found in ModFactorValues: {f.code}'
+                    'PropCodeNotFound',
+                    f'Property code not found in ModPropertyValues: {p.code}'
                 )
 
-            if not isinstance(factor_value, factor_code_data_type_info.annotation):
-                factor_value = int(factor_value)
+            prop_data = self.data[start_index:start_index + p.length]
+            prop_value = (bin_to_dec(prop_data[::-1]) + p.min_value) * p.conversion_rate
 
-            setattr(result, f.code, factor_value)
-            start_index += f.length
+            if not isinstance(prop_value, prop_code_data_type_info.annotation):
+                prop_value = int(prop_value)
+
+            setattr(result, p.code, prop_value)
+            start_index += p.length
+
+        if self.base.code in [
+            *SKILL_ON_EVENT_MOD_CODES,
+            ADDING_OSKILL_MOD_CODE
+        ]:
+            skill_id = result.skill_id
+            skill = SKILLS.get(str(skill_id))
+            if skill:
+                result.skill_name = skill.get('name')
 
         return result
 
@@ -150,53 +219,118 @@ class Modifier(IngameModel):
         if values is None:
             values = dict()
 
-        factor_data = []
+        prop_data = []
 
-        for f in self.refine_factors(self.base):
+        for p in self.init_properties(self.base):
 
-            min_value = f.min_value
-            max_value = bin_to_dec('1' * f.length)
+            min_value = p.min_value
+            max_value = bin_to_dec('1' * p.length)
 
-            value = values.get(f.code)
+            value = values.get(p.code)
 
-            if value is None:
+            if value is not None:
+                value = value / p.conversion_rate
+            else:
                 value = max_value
+
+            if value < min_value:
+                value = min_value
             else:
                 value = min(value - min_value, max_value)
 
-            converted_value = value / f.conversion_rate
-            converted_value = ceil(converted_value)
+            value = ceil(value)
 
-            factor_data.extend(reversed(dec_to_bin(converted_value, length=f.length)))
+            prop_data.extend(reversed(dec_to_bin(value, length=p.length)))
 
         data_as_array = list(reversed(dec_to_bin(self.base.id, length=MOD_ID_LENGTH)))
-        data_as_array.extend(factor_data)
+        data_as_array.extend(prop_data)
 
         self.data = ''.join(data_as_array)
 
     @staticmethod
-    def refine_factors(base_mod: BaseModifier) -> list[BaseModifierFactor]:
-
-        default_base_factor = BaseModifierFactor(
+    def init_properties(base_mod: BaseModifier) -> list[BaseModifierProperty]:
+        default_property = BaseModifierProperty(
             code='value',
-            min_value=0,
+            min_value=base_mod.min_value,
+            conversion_rate=base_mod.conversion_rate,
             length=base_mod.length
         )
+        if base_mod.code in [
+            ADDING_CLASS_SKILL_LEVEL_MOD_CODE
+        ]:
+            result = [
+                BaseModifierProperty(length=3, min_value=0, code='class_id'),
+                BaseModifierProperty(length=4, min_value=0, code='value'),
+            ]
+        elif base_mod.code in [
+            ADDING_OSKILL_MOD_CODE
+        ]:
+            result = [
+                BaseModifierProperty(length=12, min_value=0, code='skill_id'),
+                BaseModifierProperty(length=7, min_value=-1, code='skill_level'),
+            ]
+        elif base_mod.code in [
+            REANIMATE_MOD_CODE
+        ]:
+            result = [
+                BaseModifierProperty(length=12, min_value=0, code='monster_id'),
+                BaseModifierProperty(length=7, min_value=0, code='chance', conversion_rate=1),
+            ]
 
-        if not base_mod.factors:
-            return [default_base_factor]
+        elif base_mod.code in SKILL_ON_EVENT_MOD_CODES:
+            if base_mod.length == 25:
+                result = [
+                    BaseModifierProperty(length=6, min_value=0, code='skill_level'),
+                    BaseModifierProperty(length=12, min_value=0, code='skill_id'),
+                    BaseModifierProperty(length=7, min_value=0, code='chance', conversion_rate=2),
+                ]
+            else:
+                result = [
+                    BaseModifierProperty(length=6, min_value=0, code='skill_level'),
+                    BaseModifierProperty(length=11, min_value=0, code='skill_id'),
+                    BaseModifierProperty(length=7, min_value=0, code='chance', conversion_rate=1),
+                ]
 
-        result = [*base_mod.factors]
+        elif base_mod.code in ADDING_DMG_MOD_CODES:
+            result = [
+                default_property
+            ]
 
-        if base_mod.code in ADDING_DMG_MOD_CODES:
-            adding_max_dmg_base_mod = Item.find_base_mod_by_id(base_mod.id + 1)
-            adding_max_dmg_base_mod.factors[0].code = 'max_dmg'
-            result.append(adding_max_dmg_base_mod.factors[0])
+            related_dmg_base_mod = Item.find_base_mod_by_id(base_mod.id + 1)
+            related_dmg_base_mod_prop = BaseModifierProperty(
+                length=related_dmg_base_mod.length,
+                code='max_dmg',
+                min_value=related_dmg_base_mod.min_value,
+                conversion_rate=related_dmg_base_mod.conversion_rate,
+            )
+            if base_mod.code == 'item_maxdamage_percent':
+                related_dmg_base_mod_prop.code = 'min_dmg'
+
+            result.append(related_dmg_base_mod_prop)
 
             if base_mod.code in ADDING_DMG_WITH_DURATION_MOD_CODES:
                 adding_dmg_duration_base_mod = Item.find_base_mod_by_id(base_mod.id + 2)
-                adding_dmg_duration_base_mod.factors[0].code = 'duration'
-                result.append(adding_dmg_duration_base_mod.factors[0])
+                adding_dmg_duration_base_mod_prop = BaseModifierProperty(
+                    length=adding_dmg_duration_base_mod.length,
+                    code='duration',
+                    min_value=related_dmg_base_mod.min_value,
+                    conversion_rate=adding_dmg_duration_base_mod.conversion_rate
+                )
+                result.append(adding_dmg_duration_base_mod_prop)
+
+        elif base_mod.code in DESC_TEXT_MOD_CODES:
+            result = [
+                BaseModifierProperty(length=base_mod.length, min_value=0, code='text_id'),
+            ]
+
+        elif base_mod.code in [MO_COUNT_MOD_CODE]:
+            result = [
+                BaseModifierProperty(length=8, min_value=0, code='mys_orb_id'),
+                BaseModifierProperty(length=10, min_value=0, code='unknown'),
+            ]
+
+        else:
+            result = [default_property]
 
         return result
 
@@ -215,10 +349,13 @@ class Item(IngameModel):
         super(Item, self).__init__(**kwargs)
 
         self._hex_data_as_byte_array = make_byte_array_from_hex(self.data)
-        self._bin_data_as_array = self._parse_data_to_bit()
-
+        # reverse because little endian
+        self._bin_data_as_array = list(reversed(
+            convert_byte_array_to_bit(
+                data=list(reversed(self._hex_data_as_byte_array))
+            )
+        ))
         self._base = self._load_base_item()
-
         self._mods = self._load_mods()
 
     @property
@@ -252,17 +389,6 @@ class Item(IngameModel):
     def _read_data(self, index, length):
         value = self._bin_data_as_array[index: index + length]
         return bin_to_dec(''.join(reversed(value)))
-
-    def _parse_data_to_bit(self):
-
-        # little endian
-        reversed_data = reversed(self._hex_data_as_byte_array)
-
-        joined_data = ''.join(reversed_data)
-
-        bin_data = dec_to_bin(int(joined_data, 16))
-
-        return list(reversed(bin_data))
 
     @staticmethod
     def find_item_stat_from_id(stat_id: int) -> BaseStat | None:
@@ -314,19 +440,26 @@ class Item(IngameModel):
                     break
 
             item_base_mod = self.find_base_mod_by_id(id=base_mod_id)
+
             if item_base_mod:
                 mod_data_length = sum(map(
                     lambda f: f.length,
-                    Modifier.refine_factors(item_base_mod)
+                    Modifier.init_properties(item_base_mod)
                 ))
-
                 next_mod_index = mod_data_index + mod_data_length
+
                 mod_data_as_bin_array = total_mod_data[start_index: next_mod_index]
                 mod_data = ''.join(mod_data_as_bin_array)
-
                 mod = Modifier(data=mod_data,
                                runeword=rw_loading,
                                base=item_base_mod)
+
+                if mod.id in mods:
+                    raise Error(
+                        'DuplicateMod',
+                        message=f'Duplicate mod: {mod.id} - {mod.property_values.model_dump_json(exclude_none=True)}'
+                    )
+
                 mods[mod.id] = mod
 
             else:
@@ -467,6 +600,8 @@ class Item(IngameModel):
 
     @property
     def has_class_spec(self):
+        if self.is_ear or self.is_simple:
+            return None
         _, length = NON_EAR_STRUCTURE['has_class_spec']
         return self._read_data(self.has_class_spec_index, length) > 0
 
@@ -488,9 +623,6 @@ class Item(IngameModel):
 
     @property
     def rarity_details(self):
-        if self.is_ear or self.is_simple:
-            return None
-
         result = {
             'rarity': self.rarity
         }
@@ -734,6 +866,16 @@ class Item(IngameModel):
         return result
 
     @property
+    def quantity(self):
+        if self.is_ear or self.is_simple:
+            return None
+        _, length = NON_EAR_STRUCTURE['quantity']
+        result_as_bin = reversed(self._bin_data_as_array[self.quantity_index: self.quantity_index + length])
+        return bin_to_dec(
+            ''.join(result_as_bin)
+        )
+
+    @property
     def total_socket_index(self):
         quantity_index = self.quantity_index
         if self.stackable:
@@ -742,7 +884,46 @@ class Item(IngameModel):
         return quantity_index
 
     @property
-    def updated_data(self):
+    def total_sockets(self):
+        if self.is_ear or self.is_simple:
+            return None
+
+        if not self.is_socketed:
+            return 0
+
+        index = self.total_socket_index
+
+        _, length = NON_EAR_STRUCTURE['total_sockets']
+        result_as_bin = reversed(self._bin_data_as_array[index: index + length])
+        return bin_to_dec(
+            ''.join(result_as_bin)
+        )
+
+    def maximize_sockets(self):
+        if self.is_ear or self.is_simple:
+            raise Error(
+                'InvalidItem',
+                message='Cannot maximize sockets for this kind of item'
+            )
+
+        # set flag
+        if not self.is_socketed:
+            flag_index, flag_length = BASE_STRUCTURE['is_socketed']
+            flag_data = '1' * flag_length
+            self.edit(flag_index, list(flag_data))
+
+        _, length = NON_EAR_STRUCTURE['total_sockets']
+        index = self.total_socket_index
+        width, height = self.size
+
+        total_sockets = min(width * height, TOTAL_SOCKETS)
+        data_as_bin = dec_to_bin(value=total_sockets, length=length)
+        self.edit(index, list(reversed(data_as_bin)))
+
+        return self
+
+    @property
+    def updated_data(self) -> list[str]:
         # strip the data to the start mod index
         if self.is_ear or self.is_simple:
             bin_data_as_array = self._bin_data_as_array
@@ -769,7 +950,7 @@ class Item(IngameModel):
             make_byte_array_from_hex(hex_data)
         )
 
-        return result
+        return list(result)
 
     def save(self, file_path):
         with open(file_path, 'wb') as file_ref:
@@ -787,8 +968,12 @@ class Item(IngameModel):
         )
 
     def clear_mods(self,
-                   include_affixes: bool = False,
-                   include_class_spec: bool = False):
+                   include_affix_count: bool = False,
+                   include_cube_upgrades: bool = False,
+                   include_desc: bool = False,
+                   include_trophy_counter: bool = False,
+                   include_weapon_count: bool = False,
+                   ):
         if self.is_ear:
             raise Error(
                 'UnsupportedAction',
@@ -808,8 +993,27 @@ class Item(IngameModel):
             )
 
         for mod in self.mods:
+            # some desc mods,
+            # they only show info, no effects
+            if mod.base.code in DESC_TEXT_MOD_CODES:
+                if not include_desc:
+                    continue
+
+            # cube upgrade mods
+            if mod.base.code in CUBE_UPGRADE_MOD_CODES:
+                if not include_cube_upgrades:
+                    continue
+
+            if mod.base.code in [TROPHY_COUNTER_MOD_CODE]:
+                if not include_trophy_counter:
+                    continue
+
             if mod.base.code in AFFIX_MOD_CODES:
-                if not include_affixes:
+                if not include_affix_count:
+                    continue
+
+            if mod.base.code in ['weapon_count']:
+                if not include_weapon_count:
                     continue
 
             self._mods.pop(mod.id)
@@ -827,15 +1031,15 @@ class Item(IngameModel):
         self.edit(index, list(reversed(bin_value)))
 
     def change_position(self,
-                        storage_code: int,
-                        location_code: int,
+                        storage_id: int,
+                        location_id: int,
                         storage_x: int = None,
                         storage_y: int = None):
 
-        if storage_code not in STORAGES:
+        if storage_id not in STORAGES:
             raise Error('UnsupportedStorage')
 
-        if location_code not in LOCATIONS:
+        if location_id not in LOCATIONS:
             raise Error('UnsupportedLocation')
 
         if storage_x is None:
@@ -845,12 +1049,12 @@ class Item(IngameModel):
 
         # update storage
         storage_index, storage_length = BASE_STRUCTURE['storage']
-        storage_code_as_bin = dec_to_bin(storage_code, length=storage_length)[::-1]
+        storage_code_as_bin = dec_to_bin(storage_id, length=storage_length)[::-1]
         self._bin_data_as_array[storage_index: storage_index + storage_length] = list(storage_code_as_bin)
 
         # update location
         location_index, location_length = BASE_STRUCTURE['location']
-        location_code_as_bin = dec_to_bin(location_code, length=location_length)[::-1]
+        location_code_as_bin = dec_to_bin(location_id, length=location_length)[::-1]
         self._bin_data_as_array[location_index: location_index + location_length] = list(location_code_as_bin)
 
         # update location coordinate
@@ -1119,6 +1323,334 @@ class Item(IngameModel):
 
         return self
 
+    @property
+    def is_ethereal(self):
+        index, length = BASE_STRUCTURE['is_ethereal']
+        value = self._bin_data_as_array[index]
+        return value == '1'
+
+    def set_ethereal(self, value: bool):
+        index, length = BASE_STRUCTURE['is_ethereal']
+
+        value_as_bin = '1' if value else '0'
+
+        self.edit(index, [value_as_bin])
+
+        return self
+
+    def shrine_bless(self, shrine_name: str):
+        shrine_mod_mappings = {
+            # shrine names
+            'Eerie': {
+                # 1h, armors (except body)
+                'minor': {
+                    # mod, min-max value
+                    'enr_factor': [dict(value=20), dict(value=30)],  # spell focus
+                    'energy': [dict(value=4), dict(value=20)],
+                    'item_energy_percent': [dict(value=4), dict(value=5)]
+                },
+                # 2h, body armors
+                'greater': {
+                    'enr_factor': [dict(value=40), dict(value=60)],
+                    'energy': [dict(value=6), dict(value=28)],
+                    'item_energy_percent': [dict(value=6), dict(value=12)]
+                },
+            },
+            'Abandoned': {
+                # 1h, armors (except body)
+                'minor': {
+                    # mod, min-max value
+                    'item_tohit_percent': [dict(value=24), dict(value=120)],
+                    'dexterity': [dict(value=4), dict(value=20)],
+                    'item_dexterity_percent': [dict(value=4), dict(value=5)]
+                },
+                # 2h, body armors
+                'greater': {
+                    'item_tohit_percent': [dict(value=36), dict(value=170)],
+                    'dexterity': [dict(value=6), dict(value=28)],
+                    'item_dexterity_percent': [dict(value=6), dict(value=12)]
+                },
+            },
+            'Shimmering': {
+                # 1h, armors (except body)
+                'minor': {
+                    # mod, min-max value
+                    'passive_pois_mastery': [dict(value=2), dict(value=8)],  # spell focus
+                    'passive_pois_pierce': [dict(value=3), dict(value=5)],
+                },
+                # 2h, body armors
+                'greater': {
+                    'passive_pois_mastery': [dict(value=2), dict(value=15)],
+                    'passive_pois_pierce': [dict(value=5), dict(value=10)],
+                },
+            },
+        }
+
+        if self.is_ear or self.is_simple:
+            raise Error(
+                'InvalidItem',
+                'Item cannot be shrine blessed'
+            )
+
+        if self.rarity not in ['rare', 'crafted']:
+            raise Error(
+                'InvalidRarity',
+                'Invalid Rarity'
+            )
+
+        if SHRINE_BLESSED_MOD_CODE in self._mods:
+            raise Error(
+                'AlreadyBlessed',
+                'Item is already blessed'
+            )
+
+        if shrine_name not in shrine_mod_mappings:
+            raise Error(
+                'UnsupportedShrine',
+                f'Unsupported shrine: {shrine_name}',
+            )
+
+        mapping = shrine_mod_mappings[shrine_name]
+
+        bless_mods = mapping['minor']
+        if self.base.is_body_armor or self.base.is_2h_weapon:
+            bless_mods = mapping['greater']
+
+        for mod_code, bless_values in bless_mods.items():
+            bless_min_value, bless_max_value = bless_values
+            mod = self._mods.get(mod_code)
+            if mod:
+                mod_values = mod.property_values.model_dump(exclude_none=True)
+                for k, v in bless_max_value.items():
+                    if k in mod_values:
+                        mod_values[k] += v
+                mod.update(values=mod_values)
+            else:
+                self.add_mod(mod_code=mod_code, values=bless_max_value)
+        self.add_mod(mod_code=SHRINE_BLESSED_MOD_CODE)
+
+    def upgrade(self, formular: str):
+        formular_mappings = {
+            # formular
+            'LuckyBonus': {
+                # item type
+                'weapon': {
+                    # mods
+                    'item_maxdamage_percent': dict(value=20, min_dmg=20),  # Enhance Damage
+                    'item_tohit_percent': dict(value=100),  # ATK rating
+                },
+                'elm_weapon': {
+                    'item_fasterattackrate': dict(value=20),  # ATK speed
+                    'item_tohit_percent': dict(value=100),  # ATK rating
+                },
+                'armor': {
+                    'damageresist': dict(value=1),  # phys resist
+                    'item_armor_percent': dict(value=20),  # enhance def
+                },
+                'amulet': {
+                    'item_allskills': dict(value=1),  # add all skill level
+                },
+                'ring': {
+                    # 5% spell dmg
+                    'passive_cold_mastery': dict(value=5),
+                    'passive_fire_mastery': dict(value=5),
+                    'passive_ltng_mastery': dict(value=5),
+                    'passive_pois_mastery': dict(value=5),
+                    'passive_pm_mastery': dict(value=5),
+                },
+                'quiver': {
+                    # 5% to all attrs
+                    'item_strength_percent': dict(value=5),
+                    'item_dexterity_percent': dict(value=5),
+                    'item_vitality_percent': dict(value=5),
+                    'item_energy_percent': dict(value=5),
+                },
+                'jewel': {
+                    # +2 to all attrs
+                    'strength': dict(value=2),
+                    'dexterity': dict(value=2),
+                    'vitality': dict(value=2),
+                    'energy': dict(value=2),
+                }
+            },
+            'LotteryBonus': {
+                # item type
+                'weapon': {
+                    # mods
+                    'item_ignoretargetac': dict(value=1),  # Ignore Target's Defense
+                },
+                'armor': {
+                    'item_maxhp_percent': dict(value=2),
+                },
+                'amulet': {
+                    'magicresist': dict(value=5),
+                },
+                'ring': {
+                    'item_allskills': dict(value=1),  # add all skill level
+                },
+                'quiver': {
+                    'item_magicbonus': dict(value=50),
+                },
+                'jewel': {
+                    'poisonresist': dict(value=10),
+                    'coldresist': dict(value=10),
+                    'lightresist': dict(value=10),
+                    'fireresist': dict(value=10),
+                }
+            },
+        }
+
+        if self.is_ear or self.is_simple:
+            raise Error(
+                'InvalidItem',
+                'Item cannot be upgraded'
+            )
+
+        if ITEM_UPGRADED_MOD_CODE in self._mods:
+            raise Error(
+                'AlreadyUpgraded',
+                'Item is already upgraded'
+            )
+
+        if formular not in formular_mappings:
+            raise Error(
+                'UnsupportedFormular',
+                f'Unsupported formular: {formular}',
+            )
+
+        mapping = formular_mappings[formular]
+
+        if formular == 'LuckyBonus':
+            if self.rarity in ['superior', 'normal']:
+                raise Error(
+                    'InvalidRarity',
+                    'Invalid Rarity'
+                )
+
+            if self.base.is_weapon:
+                if self.base.has_related_types([
+                    'elex'
+                ]):
+                    upgrading_mods = mapping['elm_weapon']
+                else:
+                    upgrading_mods = mapping['weapon']
+
+            elif self.base.is_armor:
+                upgrading_mods = mapping['armor']
+
+            elif self.base.has_related_types([
+                'amul'
+            ]):
+                upgrading_mods = mapping['amulet']
+            elif self.base.has_related_types([
+                'ring'
+            ]):
+                upgrading_mods = mapping['ring']
+            elif self.base.has_related_types([
+                'bowq',
+                'qaqv',
+                'xboq',
+                'qcqv',
+            ]):
+                upgrading_mods = mapping['quiver']
+            elif self.base.has_related_types([
+                'jewl'
+            ]):
+                upgrading_mods = mapping['jewel']
+            else:
+                raise Error(
+                    'InvalidItemType',
+                    f'Invalid item types: {self.base.type_codes}'
+                )
+        elif formular == 'LotteryBonus':
+            if self.rarity not in ['unique', 'set']:
+                raise Error(
+                    'InvalidRarity',
+                    'Invalid Rarity'
+                )
+
+            if self.base.is_weapon:
+                upgrading_mods = mapping['weapon']
+
+            elif self.base.is_armor:
+                upgrading_mods = mapping['armor']
+
+            elif self.base.has_related_types([
+                'amul'
+            ]):
+                upgrading_mods = mapping['amulet']
+            elif self.base.has_related_types([
+                'ring'
+            ]):
+                upgrading_mods = mapping['ring']
+            elif self.base.has_related_types([
+                'bowq',
+                'qaqv',
+                'xboq',
+                'qcqv',
+            ]):
+                upgrading_mods = mapping['quiver']
+            elif self.base.has_related_types([
+                'jewl'
+            ]):
+                upgrading_mods = mapping['jewel']
+            else:
+                raise Error(
+                    'InvalidItemType',
+                    f'Invalid item types: {self.base.type_codes}'
+                )
+
+        else:
+            raise Error(
+                'UnsupportedFormular',
+                f'Unsupported formular: {formular}'
+            )
+
+        for mod_code, upgrading_values in upgrading_mods.items():
+            mod = self._mods.get(mod_code)
+            if mod:
+                mod_values = mod.property_values.model_dump(exclude_none=True)
+                for k, v in upgrading_values.items():
+                    if k in mod_values:
+                        mod_values[k] += v
+                mod.update(values=mod_values)
+            else:
+                self.add_mod(mod_code=mod_code, values=upgrading_values)
+        self.add_mod(mod_code=ITEM_UPGRADED_MOD_CODE)
+
+    def corrupt(self, mod_data: list[dict]):
+        if self.is_ear or self.is_simple:
+            raise Error(
+                'InvalidItem',
+                'Item cannot be corrupted'
+            )
+
+        if self.rarity in ['normal']:
+            raise Error(
+                'InvalidRarity',
+                'Invalid Rarity'
+            )
+
+        if ITEM_CORRUPTED_MOD_CODE in self._mods:
+            raise Error(
+                'AlreadyCorrupted',
+                'Item is already corrupted'
+            )
+
+        for i in mod_data:
+            mod_code = i['mod_code']
+            corrupting_values = i['values']
+            mod = self._mods.get(mod_code)
+            if mod:
+                mod_values = mod.property_values.model_dump(exclude_none=True)
+                for k, v in corrupting_values.items():
+                    if k in mod_values:
+                        mod_values[k] += v
+                mod.update(values=mod_values)
+            else:
+                self.add_mod(mod_code=mod_code, values=corrupting_values)
+        self.add_mod(mod_code=ITEM_CORRUPTED_MOD_CODE)
+
     def clone(self):
         result = copy.deepcopy(self)
         result.update_id(int(time.time()))
@@ -1127,12 +1659,12 @@ class Item(IngameModel):
     def print_all_mods(self):
         print('=' * 20, 'MODS', '=' * 20)
         for mod in self.mods:
-            print(mod.id, mod.base.id, mod.base.code, mod.factor_values.model_dump_json(exclude_none=True))
+            print(mod.base.id, mod.id, mod.property_values.model_dump_json(exclude_none=True))
 
         if self.is_runeword:
             print('=' * 20, 'RW MODS', '=' * 20)
             for mod in self.rw_mods:
-                print(mod.id, mod.base.id, mod.base.code, mod.factor_values.model_dump_json(exclude_none=True))
+                print(mod.base.id, mod.id, mod.property_values.model_dump_json(exclude_none=True))
 
     def print_data(self, offset: int = None, length: int = None):
         if not offset:
